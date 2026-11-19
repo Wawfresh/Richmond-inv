@@ -90,6 +90,75 @@ export function createPrivateUploader(subFolder: 'kyc' | 'payments' | 'offerings
   });
 }
 
+export interface SavedPrivateFile {
+  originalname: string;
+  filename: string;
+  mimetype: string;
+  size: number;
+  path: string;
+}
+
+export function saveBase64PrivateFile(
+  subFolder: 'kyc' | 'payments' | 'offerings' | 'cms',
+  input: { filename?: string; mimeType?: string; dataBase64: string }
+): SavedPrivateFile {
+  const originalName = path.basename(String(input.filename || 'document')).slice(0, 200) || 'document';
+  let mime = String(input.mimeType || '').toLowerCase().trim();
+  let rawBase64 = String(input.dataBase64 || '').trim();
+
+  const dataUrlMatch = rawBase64.match(/^data:([^;]+);base64,(.+)$/i);
+  if (dataUrlMatch) {
+    if (!mime) mime = dataUrlMatch[1].toLowerCase().trim();
+    rawBase64 = dataUrlMatch[2];
+  }
+
+  const ext = path.extname(originalName).toLowerCase();
+  const extAllowed = ALLOWED_EXTENSIONS.has(ext);
+  const mimeAllowed = ALLOWED_MIME_TYPES.has(mime);
+  const genericOctetWithValidExt = (mime === '' || mime === 'application/octet-stream') && extAllowed;
+
+  if (!((extAllowed && mimeAllowed) || genericOctetWithValidExt || (!ext && mimeAllowed))) {
+    throw new Error('Unsupported file type. Only PDF, JPG, PNG, WEBP, GIF, and HEIC files are permitted.');
+  }
+
+  const buffer = Buffer.from(rawBase64, 'base64');
+  if (!buffer || buffer.length === 0) {
+    throw new Error('Uploaded file appears to be empty. Please select the file again.');
+  }
+  if (buffer.length > 15 * 1024 * 1024) {
+    const err: any = new Error('Uploaded file exceeds the 15MB size limit.');
+    err.code = 'LIMIT_FILE_SIZE';
+    throw err;
+  }
+
+  const safeExt = extAllowed ? ext : MIME_TO_EXT[mime] || '.jpg';
+  const normalizedMime = mimeAllowed
+    ? mime
+    : safeExt === '.pdf'
+    ? 'application/pdf'
+    : safeExt === '.png'
+    ? 'image/png'
+    : safeExt === '.webp'
+    ? 'image/webp'
+    : safeExt === '.gif'
+    ? 'image/gif'
+    : 'image/jpeg';
+
+  const targetDir = path.join(getPrivateStorageRoot(), subFolder);
+  fs.mkdirSync(targetDir, { recursive: true });
+  const uniqueName = `${Date.now()}-${crypto.randomBytes(10).toString('hex')}${safeExt}`;
+  const fullPath = path.join(targetDir, uniqueName);
+  fs.writeFileSync(fullPath, buffer);
+
+  return {
+    originalname: ext ? originalName : `${originalName}${safeExt}`,
+    filename: uniqueName,
+    mimetype: normalizedMime,
+    size: buffer.length,
+    path: fullPath,
+  };
+}
+
 export function resolveSafeStoragePath(storedPath: string): string | null {
   const root = getPrivateStorageRoot();
   const resolved = path.resolve(storedPath);

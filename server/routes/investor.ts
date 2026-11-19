@@ -6,7 +6,7 @@ import { getDb } from '../db/connection.ts';
 import { generateReference, hashPassword, verifyPassword } from '../lib/crypto.ts';
 import { writeAuditLog } from '../lib/audit.ts';
 import { createNotification, notifyAllAdmins } from '../lib/notifications.ts';
-import { createPrivateUploader, resolveSafeStoragePath } from '../lib/uploads.ts';
+import { createPrivateUploader, resolveSafeStoragePath, saveBase64PrivateFile, type SavedPrivateFile } from '../lib/uploads.ts';
 import {
   evaluateAutomaticCryptoVerification,
   executeShareAllocationTx,
@@ -830,67 +830,108 @@ investorRouter.get('/kyc', async (req, res, next) => {
   }
 });
 
-investorRouter.post(
-  '/kyc',
-  kycUploader.fields([
-    { name: 'identityDocument', maxCount: 1 },
-    { name: 'addressProofDocument', maxCount: 1 },
-    { name: 'supportingDocument', maxCount: 1 },
-  ]),
-  async (req, res, next) => {
-    try {
-      const files = req.files as Record<string, Express.Multer.File[]> | undefined;
-      const idDoc = files?.identityDocument?.[0];
-      const addrDoc = files?.addressProofDocument?.[0];
-      const supDoc = files?.supportingDocument?.[0];
+const kycUploadMiddleware = (req: any, res: any, next: any) => {
+  if (req.is('multipart/form-data')) {
+    return kycUploader.fields([
+      { name: 'identityDocument', maxCount: 1 },
+      { name: 'addressProofDocument', maxCount: 1 },
+      { name: 'supportingDocument', maxCount: 1 },
+    ])(req, res, next);
+  }
+  return next();
+};
 
-      const cleanupUploadedFiles = () => {
-        for (const f of [idDoc, addrDoc, supDoc]) {
-          if (f?.path) {
-            try {
-              fs.unlinkSync(f.path);
-            } catch {
-              // Ignore cleanup errors
-            }
-          }
+investorRouter.post('/kyc', kycUploadMiddleware, async (req, res, next) => {
+  const savedFiles: SavedPrivateFile[] = [];
+  const cleanupUploadedFiles = () => {
+    for (const f of savedFiles) {
+      if (f?.path) {
+        try {
+          fs.unlinkSync(f.path);
+        } catch {
+          // Ignore cleanup errors
         }
-      };
-
-      const db = getDb();
-      const userId = req.authUser!.id;
-      const profile = await db('investor_profiles').where({ user_id: userId }).first();
-      if (profile?.kyc_status === 'approved') {
-        cleanupUploadedFiles();
-        res.status(409).json({
-          error: 'Your account KYC is permanently approved. No further identity verification is required.',
-        });
-        return;
       }
+    }
+  };
 
-      const schema = z.object({
-        documentType: z.enum(['passport', 'national_id', 'drivers_licence']),
-        documentNumber: z.string().trim().min(3, 'Document number must be at least 3 characters.').max(100),
-        issuingCountry: z.string().trim().min(2, 'Issuing country is required.').max(100),
-        expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Valid expiry date (YYYY-MM-DD) is required.'),
-        addressProofType: z.string().trim().min(2, 'Address proof type is required.').max(80),
-        investorNotes: z.string().trim().max(1000).optional().default(''),
+  try {
+    const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    let idDoc: SavedPrivateFile | undefined = files?.identityDocument?.[0];
+    let addrDoc: SavedPrivateFile | undefined = files?.addressProofDocument?.[0];
+    let supDoc: SavedPrivateFile | undefined = files?.supportingDocument?.[0];
+
+    if (idDoc) savedFiles.push(idDoc);
+    if (addrDoc) savedFiles.push(addrDoc);
+    if (supDoc) savedFiles.push(supDoc);
+
+    const db = getDb();
+    const userId = req.authUser!.id;
+    const profile = await db('investor_profiles').where({ user_id: userId }).first();
+    if (profile?.kyc_status === 'approved') {
+      cleanupUploadedFiles();
+      res.status(409).json({
+        error: 'Your account KYC is permanently approved. No further identity verification is required.',
       });
+      return;
+    }
 
-      const parsed = schema.safeParse(req.body);
-      if (!parsed.success) {
+    const schema = z.object({
+      documentType: z.enum(['passport', 'national_id', 'drivers_licence']),
+      documentNumber: z.string().trim().min(3, 'Document number must be at least 3 characters.').max(100),
+      issuingCountry: z.string().trim().min(2, 'Issuing country is required.').max(100),
+      expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Valid expiry date (YYYY-MM-DD) is required.'),
+      addressProofType: z.string().trim().min(2, 'Address proof type is required.').max(80),
+      investorNotes: z.string().trim().max(1000).optional().default(''),
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      cleanupUploadedFiles();
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid KYC metadata.' });
+      return;
+    }
+
+    // Support JSON base64 uploads (avoids mobile Safari FormData / shared-hosting multipart drops)
+    if (!idDoc && req.body?.identityDocument?.dataBase64) {
+      try {
+        idDoc = saveBase64PrivateFile('kyc', req.body.identityDocument);
+        savedFiles.push(idDoc);
+      } catch (fileErr: any) {
         cleanupUploadedFiles();
-        res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid KYC metadata.' });
+        res.status(400).json({ error: fileErr?.message || 'Invalid identity document file.' });
         return;
       }
-
-      if (!idDoc || !addrDoc) {
+    }
+    if (!addrDoc && req.body?.addressProofDocument?.dataBase64) {
+      try {
+        addrDoc = saveBase64PrivateFile('kyc', req.body.addressProofDocument);
+        savedFiles.push(addrDoc);
+      } catch (fileErr: any) {
         cleanupUploadedFiles();
-        res.status(400).json({ error: 'Both an identity document and a proof of address document are required.' });
+        res.status(400).json({ error: fileErr?.message || 'Invalid proof of address file.' });
         return;
       }
+    }
+    if (!supDoc && req.body?.supportingDocument?.dataBase64) {
+      try {
+        supDoc = saveBase64PrivateFile('kyc', req.body.supportingDocument);
+        savedFiles.push(supDoc);
+      } catch (fileErr: any) {
+        cleanupUploadedFiles();
+        res.status(400).json({ error: fileErr?.message || 'Invalid supporting document file.' });
+        return;
+      }
+    }
 
-      const submissionRef = generateReference('RINV-KYC');
-      let submissionId = 0;
+    if (!idDoc || !addrDoc) {
+      cleanupUploadedFiles();
+      res.status(400).json({ error: 'Both an identity document and a proof of address document are required.' });
+      return;
+    }
+
+    const submissionRef = generateReference('RINV-KYC');
+    let submissionId = 0;
 
       await db.transaction(async (trx) => {
         const [subId] = await trx('kyc_submissions').insert({
@@ -967,10 +1008,10 @@ investorRouter.post(
 
       res.status(201).json({ ok: true, submissionReference: submissionRef, status: 'submitted' });
     } catch (err) {
+      cleanupUploadedFiles();
       next(err);
     }
-  }
-);
+});
 
 investorRouter.get('/kyc/documents/:docId', async (req, res, next) => {
   try {

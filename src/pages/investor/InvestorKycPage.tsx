@@ -13,6 +13,94 @@ function formatFileSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error(`Unable to read "${file.name}". Please re-select the file.`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function prepareKycFilePayload(file: File): Promise<{
+  filename: string;
+  mimeType: string;
+  dataBase64: string;
+}> {
+  const mime = (file.type || '').toLowerCase();
+  const lowerName = (file.name || '').toLowerCase();
+  const isPdf = mime.includes('pdf') || lowerName.endsWith('.pdf');
+  const isImage = mime.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|heic|heif|jfif)$/i.test(lowerName);
+
+  if (isPdf) {
+    if (file.size > 10 * 1024 * 1024) {
+      throw new Error(`"${file.name}" exceeds the 10MB PDF size limit.`);
+    }
+    const dataUrl = await readFileAsDataUrl(file);
+    return {
+      filename: file.name || 'document.pdf',
+      mimeType: 'application/pdf',
+      dataBase64: dataUrl,
+    };
+  }
+
+  if (isImage) {
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const compressed = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxDim = 1600;
+            let width = img.naturalWidth || img.width;
+            let height = img.naturalHeight || img.height;
+            if (width > maxDim || height > maxDim) {
+              const scale = Math.min(maxDim / width, maxDim / height);
+              width = Math.max(1, Math.round(width * scale));
+              height = Math.max(1, Math.round(height * scale));
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              reject(new Error('Canvas unavailable'));
+              return;
+            }
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.82));
+          } catch (e) {
+            reject(e);
+          }
+        };
+        img.onerror = () => reject(new Error('Image decode fallback'));
+        img.src = dataUrl;
+      });
+      const baseName = (file.name || 'document').replace(/\.[^.]+$/, '');
+      return {
+        filename: `${baseName}.jpg`,
+        mimeType: 'image/jpeg',
+        dataBase64: compressed,
+      };
+    } catch {
+      // Fall back to raw file upload if browser cannot decode format into canvas
+      if (file.size > 10 * 1024 * 1024) {
+        throw new Error(`"${file.name}" is too large (${formatFileSize(file.size)}). Please select a JPG or PNG under 10MB.`);
+      }
+      const rawDataUrl = await readFileAsDataUrl(file);
+      return {
+        filename: file.name || 'document.jpg',
+        mimeType: file.type || 'application/octet-stream',
+        dataBase64: rawDataUrl,
+      };
+    }
+  }
+
+  throw new Error(`Unsupported file "${file.name}". Please upload a PDF, JPG, PNG, or WEBP document.`);
+}
+
 export function InvestorKycPage() {
   const { refreshSession } = useAuth();
   const [data, setData] = useState<any>(null);
@@ -90,20 +178,25 @@ export function InvestorKycPage() {
 
     setSubmitting(true);
     try {
-      const formData = new FormData();
-      formData.append('documentType', documentType);
-      formData.append('documentNumber', trimmedDocNumber);
-      formData.append('issuingCountry', trimmedCountry);
-      formData.append('expiryDate', trimmedExpiry);
-      formData.append('addressProofType', addressProofType);
-      formData.append('investorNotes', investorNotes.trim());
-      formData.append('identityDocument', idFile);
-      formData.append('addressProofDocument', addressFile);
-      if (supportFile) formData.append('supportingDocument', supportFile);
+      const [identityDocument, addressProofDocument, supportingDocument] = await Promise.all([
+        prepareKycFilePayload(idFile),
+        prepareKycFilePayload(addressFile),
+        supportFile ? prepareKycFilePayload(supportFile) : Promise.resolve(undefined),
+      ]);
 
       const res = await apiRequest<{ submissionReference: string }>('/api/investor/kyc', {
         method: 'POST',
-        body: formData,
+        body: JSON.stringify({
+          documentType,
+          documentNumber: trimmedDocNumber,
+          issuingCountry: trimmedCountry,
+          expiryDate: trimmedExpiry,
+          addressProofType,
+          investorNotes: investorNotes.trim(),
+          identityDocument,
+          addressProofDocument,
+          ...(supportingDocument ? { supportingDocument } : {}),
+        }),
       });
       setSuccess(`KYC package ${res.submissionReference} submitted securely for compliance review.`);
       setDocumentNumber('');
@@ -118,7 +211,12 @@ export function InvestorKycPage() {
       if (supportInputRef.current) supportInputRef.current.value = '';
       await Promise.all([loadKyc(), refreshSession()]);
     } catch (err: any) {
-      setError(err?.message || 'KYC submission failed. Please verify your fields and selected files.');
+      const rawMsg = String(err?.message || '');
+      if (rawMsg === 'Load failed' || rawMsg === 'Failed to fetch') {
+        setError('Network connection interrupted while uploading documents. Please check your connection and try again.');
+      } else {
+        setError(rawMsg || 'KYC submission failed. Please verify your fields and selected files.');
+      }
     } finally {
       setSubmitting(false);
     }

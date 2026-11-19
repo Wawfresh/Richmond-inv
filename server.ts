@@ -47,7 +47,7 @@ async function bootstrapServer() {
     next();
   });
 
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '16mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
   app.use(cookieParser());
   app.use(attachSessionUser);
@@ -91,8 +91,8 @@ async function bootstrapServer() {
       res.status(400).json({ error: err.message });
       return;
     }
-    if (err?.code === 'LIMIT_FILE_SIZE') {
-      res.status(400).json({ error: 'Uploaded file exceeds the 15MB size limit.' });
+    if (err?.code === 'LIMIT_FILE_SIZE' || err?.type === 'entity.too.large') {
+      res.status(413).json({ error: 'Uploaded documents exceed the maximum size limit. Please upload smaller images or PDFs.' });
       return;
     }
     if (err?.name === 'MulterError') {
