@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { Router } from 'express';
 import { z } from 'zod';
 import QRCode from 'qrcode';
@@ -843,29 +844,51 @@ investorRouter.post(
       const addrDoc = files?.addressProofDocument?.[0];
       const supDoc = files?.supportingDocument?.[0];
 
+      const cleanupUploadedFiles = () => {
+        for (const f of [idDoc, addrDoc, supDoc]) {
+          if (f?.path) {
+            try {
+              fs.unlinkSync(f.path);
+            } catch {
+              // Ignore cleanup errors
+            }
+          }
+        }
+      };
+
+      const db = getDb();
+      const userId = req.authUser!.id;
+      const profile = await db('investor_profiles').where({ user_id: userId }).first();
+      if (profile?.kyc_status === 'approved') {
+        cleanupUploadedFiles();
+        res.status(409).json({
+          error: 'Your account KYC is permanently approved. No further identity verification is required.',
+        });
+        return;
+      }
+
       const schema = z.object({
         documentType: z.enum(['passport', 'national_id', 'drivers_licence']),
-        documentNumber: z.string().trim().min(3).max(100),
-        issuingCountry: z.string().trim().min(2).max(100),
-        expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Valid expiry date YYYY-MM-DD is required.'),
-        addressProofType: z.string().trim().min(2).max(80),
+        documentNumber: z.string().trim().min(3, 'Document number must be at least 3 characters.').max(100),
+        issuingCountry: z.string().trim().min(2, 'Issuing country is required.').max(100),
+        expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Valid expiry date (YYYY-MM-DD) is required.'),
+        addressProofType: z.string().trim().min(2, 'Address proof type is required.').max(80),
         investorNotes: z.string().trim().max(1000).optional().default(''),
       });
 
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) {
+        cleanupUploadedFiles();
         res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid KYC metadata.' });
         return;
       }
 
       if (!idDoc || !addrDoc) {
+        cleanupUploadedFiles();
         res.status(400).json({ error: 'Both an identity document and a proof of address document are required.' });
         return;
       }
 
-      const db = getDb();
-      const userId = req.authUser!.id;
-      const profile = await db('investor_profiles').where({ user_id: userId }).first();
       const submissionRef = generateReference('RINV-KYC');
       let submissionId = 0;
 
@@ -962,6 +985,13 @@ investorRouter.get('/kyc/documents/:docId', async (req, res, next) => {
     const safePath = resolveSafeStoragePath(doc.storage_path);
     if (!safePath) {
       res.status(404).json({ error: 'Stored document file not found.' });
+      return;
+    }
+    if (String(req.query.inline || '') === '1') {
+      const safeName = String(doc.original_filename || 'document').replace(/["\r\n]/g, '');
+      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+      res.sendFile(safePath);
       return;
     }
     res.download(safePath, doc.original_filename);

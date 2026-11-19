@@ -274,11 +274,11 @@ export function RegisterPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-semibold text-[#1C2026] mb-1.5">Password (min 10 chars) *</label>
+                <label className="block text-xs font-semibold text-[#1C2026] mb-1.5">Password (min 6 chars) *</label>
                 <input
                   type="password"
                   required
-                  minLength={10}
+                  minLength={6}
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   className="w-full px-3.5 py-2.5 text-sm border border-[#D6DAE2] bg-[#FCFBF8]"
@@ -289,7 +289,7 @@ export function RegisterPage() {
                 <input
                   type="password"
                   required
-                  minLength={10}
+                  minLength={6}
                   value={form.passwordConfirmation}
                   onChange={(e) => setForm({ ...form, passwordConfirmation: e.target.value })}
                   className="w-full px-3.5 py-2.5 text-sm border border-[#D6DAE2] bg-[#FCFBF8]"

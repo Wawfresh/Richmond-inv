@@ -92,7 +92,11 @@ async function bootstrapServer() {
       return;
     }
     if (err?.code === 'LIMIT_FILE_SIZE') {
-      res.status(400).json({ error: 'Uploaded file exceeds the 10MB size limit.' });
+      res.status(400).json({ error: 'Uploaded file exceeds the 15MB size limit.' });
+      return;
+    }
+    if (err?.name === 'MulterError') {
+      res.status(400).json({ error: err.message || 'File upload failed. Please check your selected files.' });
       return;
     }
     console.error('Server Error:', err);

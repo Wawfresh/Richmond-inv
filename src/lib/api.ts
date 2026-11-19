@@ -124,7 +124,7 @@ export async function apiRequest<T = any>(url: string, options: RequestInit = {}
   return (await response.text()) as unknown as T;
 }
 
-export async function apiDownload(url: string, fallbackFilename: string): Promise<void> {
+export async function apiFetchBlob(url: string): Promise<{ blob: Blob; contentType: string; filename: string }> {
   const headers = new Headers();
   const activeSessionToken = readStoredSessionToken();
   if (activeSessionToken) {
@@ -141,21 +141,26 @@ export async function apiDownload(url: string, fallbackFilename: string): Promis
     const contentType = response.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const errData = await response.json().catch(() => ({}));
-      throw new ApiError(errData?.error || 'Download failed.', response.status);
+      throw new ApiError(errData?.error || 'Unable to load document.', response.status);
     }
-    throw new ApiError('Download failed.', response.status);
+    throw new ApiError('Unable to load document.', response.status);
   }
 
+  const contentType = response.headers.get('content-type') || 'application/octet-stream';
   const disposition = response.headers.get('content-disposition') || '';
   const match = disposition.match(/filename="?([^"]+)"?/i);
-  const filename = match?.[1] || fallbackFilename;
-
+  const filename = match?.[1] || 'document';
   const blob = await response.blob();
+  return { blob, contentType, filename };
+}
+
+export async function apiDownload(url: string, fallbackFilename: string): Promise<void> {
+  const { blob, filename } = await apiFetchBlob(url);
   const objectUrl = URL.createObjectURL(blob);
   try {
     const link = document.createElement('a');
     link.href = objectUrl;
-    link.download = filename;
+    link.download = filename || fallbackFilename;
     document.body.appendChild(link);
     link.click();
     link.remove();

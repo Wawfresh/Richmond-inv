@@ -503,6 +503,7 @@ adminRouter.put('/investors/:id', requireAdmin('investors.manage'), async (req, 
       return;
     }
 
+    const nextKycStatus = existingProfile.kyc_status === 'approved' ? 'approved' : parsed.data.kycStatus;
     const now = new Date();
     await db.transaction(async (trx) => {
       await trx('users').where({ id: userId }).update({
@@ -529,7 +530,7 @@ adminRouter.put('/investors/:id', requireAdmin('investors.manage'), async (req, 
         city: parsed.data.city,
         state_region: parsed.data.stateRegion,
         postal_code: parsed.data.postalCode,
-        kyc_status: parsed.data.kycStatus,
+        kyc_status: nextKycStatus,
         updated_at: now,
       });
     });
@@ -558,7 +559,7 @@ adminRouter.put('/investors/:id', requireAdmin('investors.manage'), async (req, 
         account_status: parsed.data.accountStatus,
         first_name: parsed.data.firstName,
         last_name: parsed.data.lastName,
-        kyc_status: parsed.data.kycStatus,
+        kyc_status: nextKycStatus,
       },
       req,
     });
@@ -930,7 +931,8 @@ adminRouter.get('/kyc', requireAdmin('kyc.review'), async (_req, res, next) => {
         'investor_profiles.account_number',
         'investor_profiles.first_name',
         'investor_profiles.last_name',
-        'investor_profiles.country_of_residence'
+        'investor_profiles.country_of_residence',
+        'investor_profiles.kyc_status as profile_kyc_status'
       );
 
     const docs = await db('kyc_documents').select(
@@ -974,6 +976,13 @@ adminRouter.get('/kyc/documents/:docId', requireAdmin('kyc.review'), async (req,
       res.status(404).json({ error: 'File missing in storage.' });
       return;
     }
+    if (String(req.query.inline || '') === '1') {
+      const safeName = String(doc.original_filename || 'document').replace(/["\r\n]/g, '');
+      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+      res.sendFile(safePath);
+      return;
+    }
     res.download(safePath, doc.original_filename);
   } catch (err) {
     next(err);
@@ -996,6 +1005,14 @@ adminRouter.post('/kyc/:id/decision', requireAdmin('kyc.review'), async (req, re
     const sub = await db('kyc_submissions').where({ id: Number(req.params.id) }).first();
     if (!sub) {
       res.status(404).json({ error: 'KYC submission not found.' });
+      return;
+    }
+
+    const profile = await db('investor_profiles').where({ user_id: sub.user_id }).first();
+    if (sub.status === 'approved' || profile?.kyc_status === 'approved') {
+      res.status(409).json({
+        error: 'This investor account is permanently KYC approved and cannot be altered.',
+      });
       return;
     }
 

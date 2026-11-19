@@ -52,8 +52,8 @@ const registerSchema = z
     city: z.string().trim().min(1, 'City is required.').max(100),
     stateRegion: z.string().trim().min(1, 'State or region is required.').max(100),
     postalCode: z.string().trim().min(2, 'Postal code is required.').max(40),
-    password: z.string().min(10, 'Password must be at least 10 characters.').max(128),
-    passwordConfirmation: z.string().min(10).max(128),
+    password: z.string().min(6, 'Password must be at least 6 characters.').max(128),
+    passwordConfirmation: z.string().min(6, 'Password confirmation must be at least 6 characters.').max(128),
     acceptTerms: z.literal(true, { message: 'You must accept the Terms and Conditions and Privacy Policy.' }),
   })
   .refine((data) => data.password === data.passwordConfirmation, {
