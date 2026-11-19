@@ -28,6 +28,10 @@ This generates clean upload-ready folders in `deploy-dist/`:
 2. `deploy-dist/richmond-inv-app/` — Runtime-only Node.js server folder (`server.js`, slim `package.json` with zero native C++/`better-sqlite3` build dependencies, `.env.example`, and `storage/private_uploads/`).
 3. `deploy-dist/richmond-inv-app-single-root/` — Alternative single-folder deployment if you mount the Node.js App directly at `/` (`SERVE_STATIC=true`) instead of using `public_html/`.
 
+> **Deploying via GitHub Actions**:
+> - Pushing to `main` triggers `.github/workflows/ci.yml`, which builds `deploy-dist/` and attaches `richmond-inv-namecheap-package` as a downloadable artifact in **GitHub → Actions**.
+> - To push straight from GitHub to Namecheap over FTPS, add repository secrets `NAMECHEAP_FTP_SERVER`, `NAMECHEAP_FTP_USERNAME`, and `NAMECHEAP_FTP_PASSWORD`, then run **Actions → Deploy to Namecheap → Run workflow** (`.github/workflows/deploy-namecheap.yml`). Afterward, open **cPanel → Setup Node.js App** and click **Run NPM Install** (whenever `package.json` changes) and **Restart**.
+
 ---
 
 ## 3. Configure MySQL/MariaDB in Namecheap cPanel
@@ -39,18 +43,21 @@ This generates clean upload-ready folders in `deploy-dist/`:
 
 ---
 
-## 4. Deploy the Node.js Backend (`richmond-inv-app`)
+## 4. Deploy in cPanel (Setup Node.js App — Recommended Single-Root Mode)
 
-1. In **cPanel → File Manager**, create `/home/<cpanel_user>/richmond-inv-app/` **outside** `public_html/`.
-2. Upload the contents of `deploy-dist/richmond-inv-app/` (`server.js`, `package.json`, `storage/`) into `/home/<cpanel_user>/richmond-inv-app/`.
-3. Create `/home/<cpanel_user>/richmond-inv-app/.env` (set permissions to `0600`) based on `.env.example`:
+Mounting **Setup Node.js App** at your domain root (`/`) with `SERVE_STATIC="true"` is the cleanest setup on Namecheap Stellar because Passenger preserves full `/api/*` paths and Express serves both the API and the React frontend (`dist/`).
+
+1. Open **cPanel → Domains** and enable **Force HTTPS Redirect** for your domain.
+2. In **cPanel → File Manager**, confirm `/home/<cpanel_user>/richmond-inv-app/` exists outside `public_html/`.
+3. Upload the contents of `deploy-dist/richmond-inv-app-single-root/` (`server.js`, `package.json`, `dist/`, `storage/`) into `/home/<cpanel_user>/richmond-inv-app/` (or run the **Deploy to Namecheap** GitHub Action).
+4. Create `/home/<cpanel_user>/richmond-inv-app/.env` (permissions `0600`) using `.env.example`:
 
 ```env
 NODE_ENV="production"
 PORT="3000"
 APP_URL="https://yourdomain.com"
 CORS_ORIGIN="https://yourdomain.com"
-SERVE_STATIC="false"
+SERVE_STATIC="true"
 
 DB_CLIENT="mysql2"
 DB_HOST="localhost"
@@ -60,34 +67,29 @@ DB_USER="cpaneluser_richmond_user"
 DB_PASSWORD="YOUR_STRONG_MYSQL_PASSWORD"
 DB_POOL_MAX="8"
 
-SESSION_SECRET="REPLACE_WITH_64_BYTE_RANDOM_HEX"
+SESSION_SECRET="GENERATE_64_CHAR_HEX_RANDOM_SECRET"
 COOKIE_SECURE="true"
 COOKIE_SAMESITE="lax"
-
 UPLOAD_STORAGE_DIR="/home/<cpanel_user>/richmond-inv-app/storage/private_uploads"
 
 INITIAL_ADMIN_EMAIL="admin@yourdomain.com"
-INITIAL_ADMIN_PASSWORD="REPLACE_WITH_STRONG_ADMIN_PASSWORD"
+INITIAL_ADMIN_PASSWORD="CHANGE_IMMEDIATELY_STRONG_PASSWORD"
 ```
 
-4. Open **cPanel → Setup Node.js App** and click **Create Application**:
+5. Open **cPanel → Setup Node.js App** and click **Create Application**:
    - **Node.js version**: `22.x` (or `20.x`)
    - **Application mode**: `Production`
    - **Application root**: `richmond-inv-app`
-   - **Application URL**: `yourdomain.com/api`
+   - **Application URL**: `yourdomain.com` (leave the path field empty)
    - **Application startup file**: `server.js`
-5. Click **Run NPM Install** inside the cPanel Node.js App screen (installs only pure-JS runtime dependencies cleanly within shared hosting memory limits).
-6. Click **Start App** (or **Restart**). Migrations `001`–`006` and initial seed records will run automatically against your MySQL database.
+6. Click **Run NPM Install** in the cPanel Node.js interface (installs pure-JS runtime dependencies cleanly within shared hosting memory limits).
+7. Click **Start App** (or **Restart**). On startup, `server.js` automatically runs versioned Knex migrations (`001` through `006`) against Namecheap MySQL/MariaDB and initializes roles, permissions, CMS pages, and the initial Administrator account.
 
 ---
 
-## 5. Deploy the Static Frontend (`public_html/`)
+## 5. Optional: Separate Apache `public_html/` Mode
 
-1. Open `/home/<cpanel_user>/public_html/` in **cPanel → File Manager**.
-2. Upload the contents of `deploy-dist/public_html/` (make sure **Show Hidden Files** is enabled so `.htaccess` is visible and uploaded).
-3. Verify `public_html/.htaccess` contains the rules from `deploy/public_html.htaccess` (HTTPS redirect, `/api` passthrough to Passenger, dotfile blocking, and React Router `/index.html` fallback).
-
-> **Alternative Single-Root Mode**: If you prefer cPanel Node.js App mounted at `yourdomain.com/` directly, upload `deploy-dist/richmond-inv-app-single-root/` instead, set `SERVE_STATIC="true"` in `.env`, and do not place React files in `public_html/`.
+Only use `deploy-dist/public_html/` + `deploy/public_html.htaccess` if you are configuring an external reverse proxy that forwards `/api/*` **without** stripping the `/api` prefix (set `SERVE_STATIC="false"` in `.env`). For standard Namecheap Stellar shared hosting, keep the single-root setup in Section 4.
 
 ---
 

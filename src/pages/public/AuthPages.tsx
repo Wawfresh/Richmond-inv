@@ -40,7 +40,7 @@ export function LoginPage() {
           <div className="space-y-1">
             <div className="text-xs uppercase tracking-[0.18em] text-[#997837] font-semibold">Account Access</div>
             <h1 className="font-serif text-3xl font-semibold text-[#0B172A]">Sign In</h1>
-            <p className="text-xs text-[#4A5260]">Access your RICHMOND-INV investor or administrator portal.</p>
+            <p className="text-xs text-[#4A5260]">Access your RICHMOND-INV portal.</p>
           </div>
 
           {error && <div className="p-3 border border-[#991B1B]/30 bg-[#991B1B]/5 text-xs text-[#991B1B]">{error}</div>}

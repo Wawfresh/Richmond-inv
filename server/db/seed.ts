@@ -85,7 +85,7 @@ export async function runBootstrapSeed(): Promise<void> {
   const settingSeeds = [
     { setting_key: 'company_name', setting_value: 'RICHMOND-INV', value_type: 'string', group_name: 'corporate', description: 'Primary institutional wordmark', is_public: true },
     { setting_key: 'company_legal_name', setting_value: 'Richmond Investment Holdings Ltd.', value_type: 'string', group_name: 'corporate', description: 'Legal entity name (configure in Admin Settings)', is_public: true },
-    { setting_key: 'company_registration_note', setting_value: 'Registration & jurisdictional details configurable via Administrator Settings.', value_type: 'string', group_name: 'corporate', description: 'Administrator-managed legal registration notice', is_public: true },
+    { setting_key: 'company_registration_note', setting_value: '', value_type: 'string', group_name: 'corporate', description: 'Administrator-managed legal registration notice', is_public: true },
     { setting_key: 'headquarters_address', setting_value: '24 Bishopsgate, London EC2N 4BQ, United Kingdom', value_type: 'string', group_name: 'corporate', description: 'Corporate office address', is_public: true },
     { setting_key: 'contact_email', setting_value: 'investor.relations@richmond-inv.com', value_type: 'string', group_name: 'corporate', description: 'Investor relations contact email', is_public: true },
     { setting_key: 'contact_phone', setting_value: '+44 20 7946 0180', value_type: 'string', group_name: 'corporate', description: 'Investor relations telephone', is_public: true },

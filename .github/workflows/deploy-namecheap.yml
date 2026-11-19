@@ -1,0 +1,42 @@
+name: Deploy to Namecheap
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: TypeScript lint check
+        run: npm run lint
+
+      - name: Build and package for Namecheap
+        run: npm run package:namecheap
+
+      - name: Deploy app bundle (server.js + dist/) to richmond-inv-app/
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.NAMECHEAP_FTP_SERVER }}
+          username: ${{ secrets.NAMECHEAP_FTP_USERNAME }}
+          password: ${{ secrets.NAMECHEAP_FTP_PASSWORD }}
+          protocol: ftps
+          local-dir: ./deploy-dist/richmond-inv-app-single-root/
+          server-dir: ./richmond-inv-app/
+          dangerous-clean-slate: false
+          exclude: |
+            .env
+            .env.*
+            node_modules/**
+            storage/**

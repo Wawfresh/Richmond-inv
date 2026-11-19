@@ -10,9 +10,11 @@ export function CorporateLayout({ children }: { children: React.ReactNode }) {
 
   const companyName = publicSettings.company_name || 'RICHMOND-INV';
   const legalName = publicSettings.company_legal_name || 'Richmond Investment Holdings Ltd.';
+  const rawRegNote = (publicSettings.company_registration_note || '').trim();
   const regNote =
-    publicSettings.company_registration_note ||
-    'Registration & jurisdictional details configurable via Administrator Settings.';
+    rawRegNote === 'Registration & jurisdictional details configurable via Administrator Settings.'
+      ? ''
+      : rawRegNote;
   const hqAddress = publicSettings.headquarters_address || '24 Bishopsgate, London EC2N 4BQ, United Kingdom';
   const contactEmail = publicSettings.contact_email || 'investor.relations@richmond-inv.com';
   const contactPhone = publicSettings.contact_phone || '+44 20 7946 0180';
@@ -172,7 +174,7 @@ export function CorporateLayout({ children }: { children: React.ReactNode }) {
 
         <div className="border-t border-[#1E365C] bg-[#060E1C]">
           <div className="max-w-[1280px] mx-auto px-6 py-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs text-[#8E99AA]">
-            <p>{regNote}</p>
+            {regNote ? <p>{regNote}</p> : <span />}
             <p className="whitespace-nowrap">© {new Date().getFullYear()} {legalName}</p>
           </div>
         </div>
