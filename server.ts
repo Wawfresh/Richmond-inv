@@ -25,17 +25,70 @@ async function bootstrapServer() {
 
   app.use(
     helmet({
-      contentSecurityPolicy: false,
+      contentSecurityPolicy: isProd
+        ? {
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: [
+                "'self'",
+                "'unsafe-inline'",
+                'https://translate.google.com',
+                'https://translate.googleapis.com',
+                'https://translate-pa.googleapis.com',
+              ],
+              styleSrc: [
+                "'self'",
+                "'unsafe-inline'",
+                'https://fonts.googleapis.com',
+                'https://www.gstatic.com',
+                'https://translate.googleapis.com',
+              ],
+              fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+              imgSrc: [
+                "'self'",
+                'data:',
+                'blob:',
+                'https://www.gstatic.com',
+                'https://www.google.com',
+                'https://translate.googleapis.com',
+                'https://translate.google.com',
+              ],
+              connectSrc: [
+                "'self'",
+                'https://translate.googleapis.com',
+                'https://translate-pa.googleapis.com',
+              ],
+              frameSrc: ["'self'", 'blob:', 'https://translate.google.com'],
+              objectSrc: ["'none'"],
+              baseUri: ["'self'"],
+              formAction: ["'self'"],
+              frameAncestors: ["'self'"],
+            },
+          }
+        : false,
+      frameguard: isProd ? { action: 'sameorigin' } : false,
+      hsts: isProd ? { maxAge: 31536000, includeSubDomains: true } : false,
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
       crossOriginEmbedderPolicy: false,
     })
   );
 
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    next();
+  });
+
   // Strict CORS restriction in production when separate static frontend origin is configured
-  const allowedOrigin = process.env.CORS_ORIGIN || process.env.APP_URL;
+  const allowedOrigins = new Set(
+    [process.env.CORS_ORIGIN, process.env.APP_URL]
+      .filter(Boolean)
+      .map((v) => String(v).trim().replace(/\/+$/, ''))
+  );
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && (!isProd || (allowedOrigin && origin === allowedOrigin))) {
+    if (origin && (!isProd || allowedOrigins.has(origin.replace(/\/+$/, '')))) {
       res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, Authorization');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -52,9 +105,40 @@ async function bootstrapServer() {
   app.use(cookieParser());
   app.use(attachSessionUser);
 
+  // Prevent browsers and proxies from caching sensitive authenticated API responses
+  app.use(['/api/auth', '/api/investor', '/api/admin'], (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+  });
+
+  const loginRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many sign-in attempts. Please wait 15 minutes and try again.' },
+  });
+
+  const sensitiveAuthRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many account security requests. Please try again later.' },
+  });
+
+  const contactRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many inquiries submitted. Please try again later.' },
+  });
+
   const authRateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 60,
+    max: 80,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many authentication requests. Please try again later.' },
@@ -67,8 +151,14 @@ async function bootstrapServer() {
     legacyHeaders: false,
   });
 
-  app.use('/api/auth', authRateLimiter);
   app.use('/api', apiRateLimiter);
+  app.use('/api/auth', authRateLimiter);
+  app.use('/api/auth/login', loginRateLimiter);
+  app.use('/api/auth/admin-login', loginRateLimiter);
+  app.use('/api/auth/register', sensitiveAuthRateLimiter);
+  app.use('/api/auth/forgot-password', sensitiveAuthRateLimiter);
+  app.use('/api/auth/reset-password', sensitiveAuthRateLimiter);
+  app.use('/api/public/contact', contactRateLimiter);
   app.use('/api', requireCsrf);
 
   app.get('/api/health', (_req, res) => {
@@ -87,7 +177,10 @@ async function bootstrapServer() {
 
   // Production error handler (never leaks stack traces in production)
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    if (err?.message?.includes('Unsupported file type')) {
+    if (
+      err?.message?.includes('Unsupported file') ||
+      err?.message?.includes('does not match a permitted')
+    ) {
       res.status(400).json({ error: err.message });
       return;
     }

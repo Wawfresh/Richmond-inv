@@ -24,6 +24,7 @@ declare global {
 }
 
 export const SESSION_COOKIE_NAME = 'richmond_session';
+export const ADMIN_RETURN_COOKIE_NAME = 'richmond_admin_return';
 
 export async function attachSessionUser(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
@@ -152,7 +153,6 @@ export function requireCsrf(req: Request, res: Response, next: NextFunction): vo
     '/api/auth/register',
     '/api/auth/forgot-password',
     '/api/auth/reset-password',
-    '/api/auth/restore-admin',
   ]);
   if (csrfExemptPaths.has(reqPath) || reqPath.startsWith('/api/public/')) {
     next();
@@ -162,6 +162,29 @@ export function requireCsrf(req: Request, res: Response, next: NextFunction): vo
     next();
     return;
   }
+
+  // Enforce Origin header validation in production for cookie-authenticated mutations
+  if (process.env.NODE_ENV === 'production' && req.headers.origin) {
+    const reqOrigin = String(req.headers.origin).replace(/\/+$/, '');
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+      .split(',')[0]
+      .trim();
+    const allowed = new Set(
+      [
+        process.env.CORS_ORIGIN,
+        process.env.APP_URL,
+        host ? `https://${host}` : '',
+        host ? `http://${host}` : '',
+      ]
+        .filter(Boolean)
+        .map((v) => String(v).trim().replace(/\/+$/, ''))
+    );
+    if (allowed.size > 0 && !allowed.has(reqOrigin)) {
+      res.status(403).json({ error: 'Cross-origin request blocked by security policy.' });
+      return;
+    }
+  }
+
   const headerToken = req.headers['x-csrf-token'];
   if (typeof headerToken !== 'string' || !safeEqual(headerToken, req.authUser.csrfToken)) {
     res.status(403).json({ error: 'Invalid or missing CSRF security token.' });

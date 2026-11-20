@@ -1,8 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   apiRequest,
-  getAdminReturnSession,
-  setAdminReturnSession,
+  getAdminReturnLabelMemory,
+  setAdminReturnLabelMemory,
   setCsrfToken,
   setSessionToken,
 } from '../lib/api';
@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [publicSettings, setPublicSettings] = useState<Record<string, string>>({});
-  const [adminReturnLabel, setAdminReturnLabel] = useState<string | null>(() => getAdminReturnSession()?.label || null);
+  const [adminReturnLabel, setAdminReturnLabel] = useState<string | null>(() => getAdminReturnLabelMemory());
   const authEpochRef = useRef(0);
 
   const applyAuthSession = useCallback((payload: AuthSessionPayload) => {
@@ -53,7 +53,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const startEpoch = authEpochRef.current;
     try {
       const [meRes, bootRes] = await Promise.all([
-        apiRequest<{ authenticated: boolean; user: AuthUser | null; csrfToken: string | null }>('/api/auth/me'),
+        apiRequest<{
+          authenticated: boolean;
+          user: AuthUser | null;
+          csrfToken: string | null;
+          adminReturnAvailable?: boolean;
+          adminReturnLabel?: string | null;
+        }>('/api/auth/me'),
         apiRequest<{ settings: Record<string, string> }>('/api/public/bootstrap').catch(() => ({ settings: {} })),
       ]);
       if (bootRes?.settings) {
@@ -65,16 +71,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setCsrfToken(meRes.csrfToken || null);
       if (!meRes.authenticated) {
         setSessionToken(null);
-        setAdminReturnSession(null);
+        setAdminReturnLabelMemory(null);
         setAdminReturnLabel(null);
         setUser(null);
       } else {
         setUser(meRes.user);
         if (meRes.user?.accountType === 'admin') {
-          setAdminReturnSession(null);
+          setAdminReturnLabelMemory(null);
           setAdminReturnLabel(null);
         } else {
-          setAdminReturnLabel(getAdminReturnSession()?.label || null);
+          const resolvedLabel = meRes.adminReturnAvailable
+            ? meRes.adminReturnLabel || getAdminReturnLabelMemory() || 'Investor Account'
+            : null;
+          setAdminReturnLabelMemory(resolvedLabel);
+          setAdminReturnLabel(resolvedLabel);
         }
       }
     } catch {
@@ -100,7 +110,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ok: boolean;
         sessionToken: string;
         csrfToken: string;
-        returnAdminSessionToken: string;
         user: AuthUser;
       }>(`/api/admin/investors/${investorId}/access-dashboard`, {
         method: 'POST',
@@ -110,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? `${res.user.profile.first_name} ${res.user.profile.last_name} (${res.user.profile.account_number})`
         : res.user.email;
 
-      setAdminReturnSession({ token: res.returnAdminSessionToken, label });
+      setAdminReturnLabelMemory(label);
       setAdminReturnLabel(label);
       applyAuthSession({
         user: res.user,
@@ -124,13 +133,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const returnToAdminConsole = useCallback(
     async (onSwitched?: () => void) => {
-      const returnSession = getAdminReturnSession();
-      if (!returnSession?.token) {
-        setAdminReturnSession(null);
-        setAdminReturnLabel(null);
-        throw new Error('Administrator session backup was not found. Please sign in to the Admin Portal.');
-      }
-
       const res = await apiRequest<{
         ok: boolean;
         sessionToken: string;
@@ -138,10 +140,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user: AuthUser;
       }>('/api/auth/restore-admin', {
         method: 'POST',
-        body: JSON.stringify({ adminSessionToken: returnSession.token }),
+        body: JSON.stringify({}),
       });
 
-      setAdminReturnSession(null);
+      setAdminReturnLabelMemory(null);
       setAdminReturnLabel(null);
       applyAuthSession({
         user: res.user,
@@ -159,7 +161,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Ignore network errors on logout
     }
-    setAdminReturnSession(null);
+    setAdminReturnLabelMemory(null);
     setAdminReturnLabel(null);
     setSessionToken(null);
     setCsrfToken(null);

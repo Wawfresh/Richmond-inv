@@ -11,8 +11,9 @@ Options -Indexes
   RewriteCond %{HTTPS} !=on
   RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
-  # 2. Block accidental exposure of dotfiles (.env, .git, .htaccess)
+  # 2. Block accidental exposure of dotfiles (.env, .git, .htaccess) and sensitive data/backup files
   RewriteRule (^|/)\. - [F,L]
+  RewriteRule \.(env|sqlite|sqlite3|db|sql|bak|backup|log|ini|sh|map)$ - [F,NC,L]
 
   # 3. Pass /api requests straight through to cPanel Node.js Passenger app
   RewriteRule ^api(/|$) - [L]
@@ -27,6 +28,8 @@ Options -Indexes
   Header always set X-Content-Type-Options "nosniff"
   Header always set X-Frame-Options "SAMEORIGIN"
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
   # Never cache index.html so updated frontend deployments take effect immediately
   <FilesMatch "^index\.html$">

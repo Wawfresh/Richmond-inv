@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { Router } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/connection.ts';
@@ -17,9 +18,14 @@ import {
 } from '../lib/email.ts';
 import { createNotification } from '../lib/notifications.ts';
 import { computeInvestorWithdrawableSummary } from '../lib/withdrawals.ts';
-import { createPrivateUploader, resolveSafeStoragePath } from '../lib/uploads.ts';
+import {
+  createPrivateUploader,
+  resolveSafeStoragePath,
+  sendSafePrivateFile,
+  verifyDiskFileMagicBytes,
+} from '../lib/uploads.ts';
 import { requireAdmin, SESSION_COOKIE_NAME } from '../middleware/auth.ts';
-import { setSessionCookie } from './auth.ts';
+import { setAdminReturnCookie, setSessionCookie } from './auth.ts';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin());
@@ -34,8 +40,10 @@ function toCsv(rows: Record<string, any>[]): string {
     lines.push(
       headers
         .map((h) => {
-          const val = row[h] === null || row[h] === undefined ? '' : String(row[h]);
-          return `"${val.replace(/"/g, '""')}"`;
+          const raw = row[h] === null || row[h] === undefined ? '' : String(row[h]);
+          // Neutralize spreadsheet formula injection characters
+          const safeVal = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+          return `"${safeVal.replace(/"/g, '""')}"`;
         })
         .join(',')
     );
@@ -654,12 +662,19 @@ adminRouter.post('/investors/:id/access-dashboard', requireAdmin('investors.mana
       req,
     });
 
+    const currentAdminSession = await db('user_sessions')
+      .where({ id: req.authUser!.sessionId })
+      .first();
+    const adminReturnExpiry = currentAdminSession?.expires_at
+      ? new Date(currentAdminSession.expires_at)
+      : new Date(Date.now() + 1000 * 60 * 60 * 12);
+
+    setAdminReturnCookie(req, res, currentAdminRawToken, adminReturnExpiry);
     setSessionCookie(req, res, rawToken, expiresAt);
     res.json({
       ok: true,
       sessionToken: rawToken,
       csrfToken,
-      returnAdminSessionToken: currentAdminRawToken,
       user: {
         id: investor.id,
         email: investor.email,
@@ -972,8 +987,13 @@ adminRouter.get('/kyc', requireAdmin('kyc.review'), async (_req, res, next) => {
 
 adminRouter.get('/kyc/documents/:docId', requireAdmin('kyc.review'), async (req, res, next) => {
   try {
+    const docId = Number(req.params.docId);
+    if (!Number.isInteger(docId) || docId <= 0) {
+      res.status(400).json({ error: 'Invalid KYC document identifier.' });
+      return;
+    }
     const db = getDb();
-    const doc = await db('kyc_documents').where({ id: Number(req.params.docId) }).first();
+    const doc = await db('kyc_documents').where({ id: docId }).first();
     if (!doc) {
       res.status(404).json({ error: 'KYC document not found.' });
       return;
@@ -983,14 +1003,11 @@ adminRouter.get('/kyc/documents/:docId', requireAdmin('kyc.review'), async (req,
       res.status(404).json({ error: 'File missing in storage.' });
       return;
     }
-    if (String(req.query.inline || '') === '1') {
-      const safeName = String(doc.original_filename || 'document').replace(/["\r\n]/g, '');
-      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
-      res.sendFile(safePath);
-      return;
-    }
-    res.download(safePath, doc.original_filename);
+    sendSafePrivateFile(res, safePath, {
+      filename: doc.original_filename,
+      mimeType: doc.mime_type,
+      inline: String(req.query.inline || '') === '1',
+    });
   } catch (err) {
     next(err);
   }
@@ -1358,11 +1375,37 @@ adminRouter.post('/offerings/:id/status', requireAdmin('offerings.manage'), asyn
 });
 
 adminRouter.post('/offerings/:id/documents', requireAdmin('offerings.manage'), offeringDocUploader.single('document'), async (req, res, next) => {
+  const cleanupDoc = () => {
+    if (req.file?.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  };
   try {
+    let verifiedMime: string | null = null;
+    if (req.file) {
+      try {
+        const verified = verifyDiskFileMagicBytes(req.file);
+        verifiedMime = verified.mime;
+      } catch (fileErr: any) {
+        res.status(400).json({ error: fileErr?.message || 'Unsupported offering document file content.' });
+        return;
+      }
+    }
+
     const db = getDb();
     const offeringId = Number(req.params.id);
+    if (!Number.isInteger(offeringId) || offeringId <= 0) {
+      cleanupDoc();
+      res.status(400).json({ error: 'Invalid offering identifier.' });
+      return;
+    }
     const offering = await db('share_offerings').where({ id: offeringId }).first();
     if (!offering) {
+      cleanupDoc();
       res.status(404).json({ error: 'Share offering not found.' });
       return;
     }
@@ -1373,6 +1416,7 @@ adminRouter.post('/offerings/:id/documents', requireAdmin('offerings.manage'), o
     const isPublic = req.body?.isPublic !== 'false';
 
     if (!title) {
+      cleanupDoc();
       res.status(400).json({ error: 'Document title is required.' });
       return;
     }
@@ -1383,7 +1427,7 @@ adminRouter.post('/offerings/:id/documents', requireAdmin('offerings.manage'), o
       document_type: documentType,
       original_filename: req.file?.originalname || null,
       stored_filename: req.file?.filename || null,
-      mime_type: req.file?.mimetype || null,
+      mime_type: verifiedMime || req.file?.mimetype || null,
       file_size: req.file?.size || null,
       storage_path: req.file?.path || null,
       summary_notes: summaryNotes || null,
@@ -1393,6 +1437,7 @@ adminRouter.post('/offerings/:id/documents', requireAdmin('offerings.manage'), o
 
     res.status(201).json({ ok: true, id: docId });
   } catch (err) {
+    cleanupDoc();
     next(err);
   }
 });
@@ -1890,8 +1935,13 @@ adminRouter.get('/payments/submissions', requireAdmin('payments.manage'), async 
 
 adminRouter.get('/payments/submissions/:id/evidence', requireAdmin('payments.manage'), async (req, res, next) => {
   try {
+    const subId = Number(req.params.id);
+    if (!Number.isInteger(subId) || subId <= 0) {
+      res.status(400).json({ error: 'Invalid payment submission identifier.' });
+      return;
+    }
     const db = getDb();
-    const sub = await db('payment_submissions').where({ id: Number(req.params.id) }).first();
+    const sub = await db('payment_submissions').where({ id: subId }).first();
     if (!sub || !sub.evidence_storage_path) {
       res.status(404).json({ error: 'Payment evidence not available.' });
       return;
@@ -1901,7 +1951,11 @@ adminRouter.get('/payments/submissions/:id/evidence', requireAdmin('payments.man
       res.status(404).json({ error: 'Evidence file not found on disk.' });
       return;
     }
-    res.download(safePath, sub.evidence_filename || 'payment-evidence');
+    sendSafePrivateFile(res, safePath, {
+      filename: sub.evidence_filename || 'payment-evidence',
+      mimeType: sub.evidence_mime_type,
+      inline: false,
+    });
   } catch (err) {
     next(err);
   }
@@ -2609,6 +2663,11 @@ adminRouter.post('/admin-users', requireAdmin('settings.manage'), async (req, re
       res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid admin user data.' });
       return;
     }
+    // Prevent privilege escalation: only an existing Super Admin can provision another Super Admin
+    if (parsed.data.roleSlug === 'super_admin' && req.authUser!.roleSlug !== 'super_admin') {
+      res.status(403).json({ error: 'Only a Super Admin may provision another Super Admin account.' });
+      return;
+    }
     const db = getDb();
     const email = parsed.data.email.toLowerCase();
     const exists = await db('users').where({ email }).first();
@@ -2787,6 +2846,7 @@ adminRouter.get('/reports/:type', requireAdmin('reports.view'), async (req, res,
 
     if (format === 'csv') {
       const csv = toCsv(rows);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="richmond-inv-${type}-report.csv"`);
       res.send(csv);

@@ -1,66 +1,23 @@
-const SESSION_STORAGE_KEY = 'richmond_session_token';
-const ADMIN_RETURN_TOKEN_KEY = 'richmond_admin_return_token';
-const ADMIN_RETURN_LABEL_KEY = 'richmond_impersonated_label';
-
+// Keep any in-tab Bearer fallback strictly in volatile JavaScript memory (never in localStorage/sessionStorage).
+// Reload persistence relies exclusively on HttpOnly, SameSite session cookies sent via credentials: 'include'.
 let csrfTokenMemory: string | null = null;
 let sessionTokenMemory: string | null = null;
+let adminReturnLabelMemory: string | null = null;
 
 function readStoredSessionToken(): string | null {
-  if (sessionTokenMemory) return sessionTokenMemory;
-  try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      sessionTokenMemory = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
-    }
-  } catch {
-    // Ignore storage restriction errors
-  }
   return sessionTokenMemory;
 }
 
 export function setSessionToken(token: string | null) {
   sessionTokenMemory = token;
-  try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      if (token) {
-        window.sessionStorage.setItem(SESSION_STORAGE_KEY, token);
-      } else {
-        window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      }
-    }
-  } catch {
-    // Ignore storage restriction errors
-  }
 }
 
-export function setAdminReturnSession(info: { token: string; label: string } | null) {
-  try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      if (info) {
-        window.sessionStorage.setItem(ADMIN_RETURN_TOKEN_KEY, info.token);
-        window.sessionStorage.setItem(ADMIN_RETURN_LABEL_KEY, info.label);
-      } else {
-        window.sessionStorage.removeItem(ADMIN_RETURN_TOKEN_KEY);
-        window.sessionStorage.removeItem(ADMIN_RETURN_LABEL_KEY);
-      }
-    }
-  } catch {
-    // Ignore storage restriction errors
-  }
+export function setAdminReturnLabelMemory(label: string | null) {
+  adminReturnLabelMemory = label;
 }
 
-export function getAdminReturnSession(): { token: string; label: string } | null {
-  try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      const token = window.sessionStorage.getItem(ADMIN_RETURN_TOKEN_KEY);
-      const label = window.sessionStorage.getItem(ADMIN_RETURN_LABEL_KEY);
-      if (token) {
-        return { token, label: label || 'Investor Account' };
-      }
-    }
-  } catch {
-    // Ignore storage restriction errors
-  }
-  return null;
+export function getAdminReturnLabelMemory(): string | null {
+  return adminReturnLabelMemory;
 }
 
 export function setCsrfToken(token: string | null) {

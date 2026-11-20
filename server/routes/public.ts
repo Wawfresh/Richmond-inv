@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '../db/connection.ts';
 import { generateReference } from '../lib/crypto.ts';
 import { notifyAllAdmins } from '../lib/notifications.ts';
-import { resolveSafeStoragePath } from '../lib/uploads.ts';
+import { resolveSafeStoragePath, sendSafePrivateFile } from '../lib/uploads.ts';
 import { generateProjectOverviewPdf } from '../lib/pdfStatements.ts';
 
 export const publicRouter = Router();
@@ -140,9 +140,14 @@ publicRouter.get('/offerings/:slug', async (req, res, next) => {
 
 publicRouter.get('/offerings/documents/:docId', async (req, res, next) => {
   try {
+    const docId = Number(req.params.docId);
+    if (!Number.isInteger(docId) || docId <= 0) {
+      res.status(400).json({ error: 'Invalid document identifier.' });
+      return;
+    }
     const db = getDb();
     const doc = await db('offering_documents')
-      .where({ id: Number(req.params.docId), is_public: true })
+      .where({ id: docId, is_public: true })
       .first();
     if (!doc || !doc.storage_path) {
       res.status(404).json({ error: 'Document file not available.' });
@@ -153,7 +158,11 @@ publicRouter.get('/offerings/documents/:docId', async (req, res, next) => {
       res.status(404).json({ error: 'Document file not found.' });
       return;
     }
-    res.download(safePath, doc.original_filename || 'offering-document.pdf');
+    sendSafePrivateFile(res, safePath, {
+      filename: doc.original_filename || 'offering-document.pdf',
+      mimeType: doc.mime_type,
+      inline: false,
+    });
   } catch (err) {
     next(err);
   }

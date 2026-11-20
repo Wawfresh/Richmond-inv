@@ -6,7 +6,14 @@ import { getDb } from '../db/connection.ts';
 import { generateReference, hashPassword, verifyPassword } from '../lib/crypto.ts';
 import { writeAuditLog } from '../lib/audit.ts';
 import { createNotification, notifyAllAdmins } from '../lib/notifications.ts';
-import { createPrivateUploader, resolveSafeStoragePath, saveBase64PrivateFile, type SavedPrivateFile } from '../lib/uploads.ts';
+import {
+  createPrivateUploader,
+  resolveSafeStoragePath,
+  saveBase64PrivateFile,
+  sendSafePrivateFile,
+  verifyDiskFileMagicBytes,
+  type SavedPrivateFile,
+} from '../lib/uploads.ts';
 import {
   evaluateAutomaticCryptoVerification,
   executeShareAllocationTx,
@@ -607,7 +614,27 @@ investorRouter.get('/payment-methods', async (_req, res, next) => {
 });
 
 investorRouter.post('/payments', paymentUploader.single('evidence'), async (req, res, next) => {
+  const cleanupEvidence = () => {
+    if (req.file?.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  };
   try {
+    let verifiedEvidenceMime: string | null = null;
+    if (req.file) {
+      try {
+        const verified = verifyDiskFileMagicBytes(req.file);
+        verifiedEvidenceMime = verified.mime;
+      } catch (fileErr: any) {
+        res.status(400).json({ error: fileErr?.message || 'Unsupported payment evidence file content.' });
+        return;
+      }
+    }
+
     const db = getDb();
     const userId = req.authUser!.id;
     const investmentRequestId = Number(req.body?.investmentRequestId);
@@ -618,18 +645,21 @@ investorRouter.post('/payments', paymentUploader.single('evidence'), async (req,
     const investorNotes = String(req.body?.investorNotes || '').trim();
 
     if (!investmentRequestId || !paymentMethodId || !transactionHash || transactionHash.length < 12) {
+      cleanupEvidence();
       res.status(400).json({ error: 'Valid investment request, payment method, and blockchain transaction hash are required.' });
       return;
     }
 
     const reqRow = await db('investment_requests').where({ id: investmentRequestId, user_id: userId }).first();
     if (!reqRow) {
+      cleanupEvidence();
       res.status(404).json({ error: 'Investment request not found.' });
       return;
     }
 
     const allowedReqStatuses = ['submitted', 'under_review', 'awaiting_payment', 'payment_verification_pending'];
     if (!allowedReqStatuses.includes(reqRow.status)) {
+      cleanupEvidence();
       res.status(400).json({
         error: 'Payment can only be submitted for active investment requests awaiting settlement.',
       });
@@ -641,6 +671,7 @@ investorRouter.post('/payments', paymentUploader.single('evidence'), async (req,
       .whereIn('status', ['submitted', 'verification_pending', 'approved'])
       .first();
     if (existingPending) {
+      cleanupEvidence();
       res.status(409).json({
         error: 'A payment submission for this request is already awaiting verification or has been approved.',
       });
@@ -650,12 +681,14 @@ investorRouter.post('/payments', paymentUploader.single('evidence'), async (req,
     const method = await db('payment_methods').where({ id: paymentMethodId, is_enabled: true }).first();
     const wallet = await db('payment_wallets').where({ payment_method_id: paymentMethodId, is_active: true }).first();
     if (!method || !wallet) {
+      cleanupEvidence();
       res.status(400).json({ error: 'Selected cryptocurrency payment method is not currently available.' });
       return;
     }
 
     const minimumAllowed = Math.min(Number(wallet.min_payment_amount || 0), Number(reqRow.total_amount || 0));
     if (Number.isNaN(submittedAmount) || submittedAmount <= 0 || submittedAmount < minimumAllowed) {
+      cleanupEvidence();
       res.status(400).json({
         error: `Submitted settlement amount must be at least ${reqRow.currency} ${minimumAllowed}.`,
       });
@@ -696,7 +729,7 @@ investorRouter.post('/payments', paymentUploader.single('evidence'), async (req,
         sender_wallet_address: senderWalletAddress || null,
         evidence_filename: req.file?.originalname || null,
         evidence_storage_path: req.file?.path || null,
-        evidence_mime_type: req.file?.mimetype || null,
+        evidence_mime_type: verifiedEvidenceMime || req.file?.mimetype || null,
         status: autoApproved ? 'approved' : 'verification_pending',
         processing_mode: autoApproved ? 'automatic' : 'manual',
         verification_channel: autoApproved ? 'automatic_settlement_engine' : 'manual_treasury_review',
@@ -776,15 +809,21 @@ investorRouter.post('/payments', paymentUploader.single('evidence'), async (req,
       reviewReason: !autoApproved && autoCheck ? autoCheck.reason : undefined,
     });
   } catch (err) {
+    cleanupEvidence();
     next(err);
   }
 });
 
 investorRouter.get('/payments/:id/evidence', async (req, res, next) => {
   try {
+    const paymentId = Number(req.params.id);
+    if (!Number.isInteger(paymentId) || paymentId <= 0) {
+      res.status(400).json({ error: 'Invalid payment identifier.' });
+      return;
+    }
     const db = getDb();
     const row = await db('payment_submissions')
-      .where({ id: Number(req.params.id), user_id: req.authUser!.id })
+      .where({ id: paymentId, user_id: req.authUser!.id })
       .first();
     if (!row || !row.evidence_storage_path) {
       res.status(404).json({ error: 'Payment evidence file not found.' });
@@ -795,7 +834,11 @@ investorRouter.get('/payments/:id/evidence', async (req, res, next) => {
       res.status(404).json({ error: 'Evidence file missing from storage.' });
       return;
     }
-    res.download(safePath, row.evidence_filename || 'payment-evidence');
+    sendSafePrivateFile(res, safePath, {
+      filename: row.evidence_filename || 'payment-evidence',
+      mimeType: row.evidence_mime_type,
+      inline: false,
+    });
   } catch (err) {
     next(err);
   }
@@ -864,6 +907,20 @@ investorRouter.post('/kyc', kycUploadMiddleware, async (req, res, next) => {
     if (idDoc) savedFiles.push(idDoc);
     if (addrDoc) savedFiles.push(addrDoc);
     if (supDoc) savedFiles.push(supDoc);
+
+    // Inspect actual binary magic bytes on any multipart-uploaded KYC files
+    try {
+      for (const multipartFile of [files?.identityDocument?.[0], files?.addressProofDocument?.[0], files?.supportingDocument?.[0]]) {
+        if (multipartFile) {
+          const verified = verifyDiskFileMagicBytes(multipartFile);
+          multipartFile.mimetype = verified.mime;
+        }
+      }
+    } catch (fileErr: any) {
+      cleanupUploadedFiles();
+      res.status(400).json({ error: fileErr?.message || 'Unsupported KYC document file content.' });
+      return;
+    }
 
     const db = getDb();
     const userId = req.authUser!.id;
@@ -1015,9 +1072,14 @@ investorRouter.post('/kyc', kycUploadMiddleware, async (req, res, next) => {
 
 investorRouter.get('/kyc/documents/:docId', async (req, res, next) => {
   try {
+    const docId = Number(req.params.docId);
+    if (!Number.isInteger(docId) || docId <= 0) {
+      res.status(400).json({ error: 'Invalid KYC document identifier.' });
+      return;
+    }
     const db = getDb();
     const doc = await db('kyc_documents')
-      .where({ id: Number(req.params.docId), user_id: req.authUser!.id })
+      .where({ id: docId, user_id: req.authUser!.id })
       .first();
     if (!doc) {
       res.status(404).json({ error: 'KYC document not found.' });
@@ -1028,14 +1090,11 @@ investorRouter.get('/kyc/documents/:docId', async (req, res, next) => {
       res.status(404).json({ error: 'Stored document file not found.' });
       return;
     }
-    if (String(req.query.inline || '') === '1') {
-      const safeName = String(doc.original_filename || 'document').replace(/["\r\n]/g, '');
-      res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
-      res.sendFile(safePath);
-      return;
-    }
-    res.download(safePath, doc.original_filename);
+    sendSafePrivateFile(res, safePath, {
+      filename: doc.original_filename,
+      mimeType: doc.mime_type,
+      inline: String(req.query.inline || '') === '1',
+    });
   } catch (err) {
     next(err);
   }
@@ -1101,21 +1160,30 @@ investorRouter.get('/portfolio/export-csv', async (req, res, next) => {
         'portfolio_transactions.occurred_at'
       );
 
+    const sanitizeCsvCell = (raw: unknown): string => {
+      const str = raw === null || raw === undefined ? '' : String(raw);
+      const neutralized = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+      return `"${neutralized.replace(/"/g, '""')}"`;
+    };
+
     const header = 'Reference,Type,Offering,Quantity,UnitPrice,Amount,Currency,AccountingRef,OccurredAt\n';
     const csvLines = rows.map((r: any) =>
       [
         r.transaction_reference,
         r.transaction_type,
-        `"${String(r.offering_title || '').replace(/"/g, '""')}"`,
+        r.offering_title || '',
         r.quantity,
         r.unit_price,
         r.amount,
         r.currency,
         r.accounting_reference || '',
         new Date(r.occurred_at).toISOString(),
-      ].join(',')
+      ]
+        .map(sanitizeCsvCell)
+        .join(',')
     );
 
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="richmond-inv-portfolio-ledger.csv"');
     res.send(header + csvLines.join('\n'));
@@ -1318,9 +1386,18 @@ investorRouter.post('/account/change-password', async (req, res, next) => {
     }
 
     const newHash = await hashPassword(parsed.data.newPassword);
-    await db('users').where({ id: userId }).update({
-      password_hash: newHash,
-      updated_at: new Date(),
+    const now = new Date();
+    await db.transaction(async (trx) => {
+      await trx('users').where({ id: userId }).update({
+        password_hash: newHash,
+        updated_at: now,
+      });
+      // Revoke all other active sessions so stolen cookies/tokens on other devices are invalidated
+      await trx('user_sessions')
+        .where({ user_id: userId })
+        .whereNot({ id: req.authUser!.sessionId })
+        .whereNull('revoked_at')
+        .update({ revoked_at: now });
     });
 
     await createNotification({

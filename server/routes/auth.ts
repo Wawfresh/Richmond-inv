@@ -10,7 +10,7 @@ import {
 } from '../lib/crypto.ts';
 import { writeAuditLog } from '../lib/audit.ts';
 import { createNotification, notifyAllAdmins } from '../lib/notifications.ts';
-import { requireAuth, SESSION_COOKIE_NAME } from '../middleware/auth.ts';
+import { ADMIN_RETURN_COOKIE_NAME, requireAuth, SESSION_COOKIE_NAME } from '../middleware/auth.ts';
 
 export const authRouter = Router();
 
@@ -31,12 +31,21 @@ function getCookieOptions(req: any, expiresAt?: Date) {
     sameSite,
     secure,
     path: '/',
+    ...(sameSite === 'none' && secure ? { partitioned: true } : {}),
     ...(expiresAt ? { expires: expiresAt } : {}),
   };
 }
 
 export function setSessionCookie(req: any, res: Response, rawToken: string, expiresAt: Date) {
   res.cookie(SESSION_COOKIE_NAME, rawToken, getCookieOptions(req, expiresAt));
+}
+
+export function setAdminReturnCookie(req: any, res: Response, rawToken: string, expiresAt: Date) {
+  res.cookie(ADMIN_RETURN_COOKIE_NAME, rawToken, getCookieOptions(req, expiresAt));
+}
+
+export function clearAdminReturnCookie(req: any, res: Response) {
+  res.clearCookie(ADMIN_RETURN_COOKIE_NAME, getCookieOptions(req));
 }
 
 const registerSchema = z
@@ -361,32 +370,38 @@ authRouter.post('/logout', requireAuth, async (req, res, next) => {
         .update({ revoked_at: new Date() });
     }
     res.clearCookie(SESSION_COOKIE_NAME, getCookieOptions(req));
+    clearAdminReturnCookie(req, res);
     res.json({ ok: true });
   } catch (err) {
     next(err);
   }
 });
 
-const restoreAdminSchema = z.object({
-  adminSessionToken: z.string().trim().min(16, 'Administrator session token is required.'),
-});
-
 authRouter.post('/restore-admin', async (req, res, next) => {
   try {
-    const parsed = restoreAdminSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Valid administrator session token is required.' });
+    const cookieAdminToken = req.cookies?.[ADMIN_RETURN_COOKIE_NAME];
+    const bodyAdminToken =
+      typeof req.body?.adminSessionToken === 'string' ? req.body.adminSessionToken.trim() : '';
+    const rawAdminToken =
+      typeof cookieAdminToken === 'string' && cookieAdminToken.length >= 16
+        ? cookieAdminToken
+        : bodyAdminToken;
+
+    if (!rawAdminToken || rawAdminToken.length < 16) {
+      clearAdminReturnCookie(req, res);
+      res.status(401).json({ error: 'Administrator return session was not found. Please sign in to the Admin Portal.' });
       return;
     }
 
     const db = getDb();
-    const adminTokenHash = sha256(parsed.data.adminSessionToken);
+    const adminTokenHash = sha256(rawAdminToken);
     const adminSession = await db('user_sessions')
       .where({ token_hash: adminTokenHash })
       .whereNull('revoked_at')
       .first();
 
     if (!adminSession || new Date(adminSession.expires_at).getTime() < Date.now()) {
+      clearAdminReturnCookie(req, res);
       res.status(401).json({ error: 'Administrator session has expired or been revoked. Please sign in again.' });
       return;
     }
@@ -398,6 +413,7 @@ authRouter.post('/restore-admin', async (req, res, next) => {
       .first();
 
     if (!adminUser || adminUser.account_type !== 'admin' || adminUser.account_status !== 'active') {
+      clearAdminReturnCookie(req, res);
       res.status(403).json({ error: 'Valid active administrator account required.' });
       return;
     }
@@ -422,10 +438,11 @@ authRouter.post('/restore-admin', async (req, res, next) => {
       req,
     });
 
-    setSessionCookie(req, res, parsed.data.adminSessionToken, new Date(adminSession.expires_at));
+    clearAdminReturnCookie(req, res);
+    setSessionCookie(req, res, rawAdminToken, new Date(adminSession.expires_at));
     res.json({
       ok: true,
-      sessionToken: parsed.data.adminSessionToken,
+      sessionToken: rawAdminToken,
       csrfToken: adminSession.csrf_token,
       user: {
         id: adminUser.id,
@@ -446,7 +463,7 @@ authRouter.post('/restore-admin', async (req, res, next) => {
 authRouter.get('/me', async (req, res, next) => {
   try {
     if (!req.authUser) {
-      res.json({ authenticated: false, user: null, csrfToken: null });
+      res.json({ authenticated: false, user: null, csrfToken: null, adminReturnAvailable: false, adminReturnLabel: null });
       return;
     }
     const db = getDb();
@@ -455,9 +472,31 @@ authRouter.get('/me', async (req, res, next) => {
         ? await db('investor_profiles').where({ user_id: req.authUser.id }).first()
         : null;
 
+    let adminReturnAvailable = false;
+    let adminReturnLabel: string | null = null;
+    const rawAdminReturn = req.cookies?.[ADMIN_RETURN_COOKIE_NAME];
+    if (
+      req.authUser.accountType === 'investor' &&
+      typeof rawAdminReturn === 'string' &&
+      rawAdminReturn.length >= 16
+    ) {
+      const adminSession = await db('user_sessions')
+        .where({ token_hash: sha256(rawAdminReturn) })
+        .whereNull('revoked_at')
+        .first();
+      if (adminSession && new Date(adminSession.expires_at).getTime() > Date.now()) {
+        adminReturnAvailable = true;
+        adminReturnLabel = profile
+          ? `${profile.first_name} ${profile.last_name} (${profile.account_number})`
+          : req.authUser.email;
+      }
+    }
+
     res.json({
       authenticated: true,
       csrfToken: req.authUser.csrfToken,
+      adminReturnAvailable,
+      adminReturnLabel,
       user: {
         id: req.authUser.id,
         email: req.authUser.email,
