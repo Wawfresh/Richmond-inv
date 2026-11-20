@@ -39,7 +39,7 @@ export function getDb(): Knex {
       pool: {
         afterCreate: (conn: any, done: (err: Error | null, conn: any) => void) => {
           conn.pragma('foreign_keys = ON');
-          conn.pragma('journal_mode = WAL');
+          conn.pragma('journal_mode = DELETE');
           done(null, conn);
         },
       },

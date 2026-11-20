@@ -10,6 +10,7 @@ import {
   FileText,
   Layers,
   LogOut,
+  Mail,
   Menu,
   RefreshCw,
   Settings,
@@ -52,6 +53,8 @@ function getAdminNavIcon(to: string) {
       return Briefcase;
     case '/admin/kyc':
       return FileCheck2;
+    case '/admin/newsletter':
+      return Mail;
     case '/admin/cms':
       return FileText;
     case '/admin/settings':

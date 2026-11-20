@@ -25,6 +25,7 @@ import { AdminOfferingsPage } from './pages/admin/AdminOfferingsPage';
 import { AdminOrdersPaymentsPage } from './pages/admin/AdminOrdersPaymentsPage';
 import { AdminWithdrawalsPage } from './pages/admin/AdminWithdrawalsPage';
 import { AdminPortfolioDividendsPage } from './pages/admin/AdminPortfolioDividendsPage';
+import { AdminNewsletterPage } from './pages/admin/AdminNewsletterPage';
 import { AdminCmsPage, AdminReportsPage, AdminSettingsPage } from './pages/admin/AdminCmsSettingsReportsPage';
 
 function RequireInvestorRoute({ children }: { children: React.ReactNode }) {
@@ -224,6 +225,14 @@ export default function App() {
               element={
                 <RequireAdminRoute>
                   <AdminPortfolioDividendsPage />
+                </RequireAdminRoute>
+              }
+            />
+            <Route
+              path="/admin/newsletter"
+              element={
+                <RequireAdminRoute>
+                  <AdminNewsletterPage />
                 </RequireAdminRoute>
               }
             />

@@ -366,8 +366,9 @@ export function AdminSettingsPage() {
                   {s.setting_key} <span className="font-normal text-[#4A5260]">({s.group_name})</span>
                 </label>
                 <input
-                  type="text"
+                  type={s.value_type === 'secret' || s.setting_key === 'smtp_pass' ? 'password' : 'text'}
                   value={values[s.setting_key] ?? ''}
+                  placeholder={s.value_type === 'secret' || s.setting_key === 'smtp_pass' ? 'Leave blank to keep saved password' : undefined}
                   onChange={(e) => setValues({ ...values, [s.setting_key]: e.target.value })}
                   className="w-full px-3 py-2 border border-[#D6DAE2] bg-[#FCFBF8]"
                 />

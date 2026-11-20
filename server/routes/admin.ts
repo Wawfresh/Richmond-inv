@@ -8,6 +8,13 @@ import {
   getCryptoProcessingSettings,
 } from '../lib/cryptoPayments.ts';
 import { writeAuditLog } from '../lib/audit.ts';
+import {
+  createSmtpTransporter,
+  getSmtpConfig,
+  getSmtpPublicStatus,
+  sendInstitutionalEmail,
+  verifySmtpConnection,
+} from '../lib/email.ts';
 import { createNotification } from '../lib/notifications.ts';
 import { computeInvestorWithdrawableSummary } from '../lib/withdrawals.ts';
 import { createPrivateUploader, resolveSafeStoragePath } from '../lib/uploads.ts';
@@ -2526,7 +2533,12 @@ adminRouter.get('/cms/inquiries', requireAdmin('cms.manage'), async (_req, res, 
 adminRouter.get('/settings', requireAdmin('settings.manage'), async (_req, res, next) => {
   try {
     const db = getDb();
-    const settings = await db('system_settings').orderBy('group_name', 'asc');
+    const rawSettings = await db('system_settings').orderBy('group_name', 'asc');
+    const settings = rawSettings.map((s: any) =>
+      s.setting_key === 'smtp_pass'
+        ? { ...s, setting_value: '' }
+        : s
+    );
     const roles = await db('roles').orderBy('id', 'asc');
     const permissions = await db('permissions').orderBy('module', 'asc');
     const rolePermissions = await db('role_permissions').select('*');
@@ -2559,6 +2571,10 @@ adminRouter.put('/settings', requireAdmin('settings.manage'), async (req, res, n
 
     const db = getDb();
     for (const u of parsed.data.updates) {
+      // Never wipe an existing saved SMTP password when left blank in the settings form
+      if (u.settingKey === 'smtp_pass' && u.settingValue.trim() === '') {
+        continue;
+      }
       await db('system_settings').where({ setting_key: u.settingKey }).update({
         setting_value: u.settingValue,
         updated_by: req.authUser!.id,
@@ -2570,7 +2586,9 @@ adminRouter.put('/settings', requireAdmin('settings.manage'), async (req, res, n
       actorUserId: req.authUser!.id,
       action: 'system_settings.updated',
       entityType: 'system_settings',
-      newData: parsed.data.updates,
+      newData: parsed.data.updates.map((u) =>
+        u.settingKey === 'smtp_pass' ? { settingKey: u.settingKey, settingValue: '[REDACTED]' } : u
+      ),
       req,
     });
     res.json({ ok: true });
@@ -2881,6 +2899,318 @@ adminRouter.post('/withdrawals/:id/decision', requireAdmin('payments.manage'), a
     });
 
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// K. INVESTOR NEWSLETTER & TRANSACTIONAL EMAIL DELIVERY
+adminRouter.get('/newsletter', requireAdmin('cms.manage'), async (_req, res, next) => {
+  try {
+    const db = getDb();
+    const [smtpStatus, investors, campaigns] = await Promise.all([
+      getSmtpPublicStatus(),
+      db('users')
+        .leftJoin('investor_profiles', 'users.id', 'investor_profiles.user_id')
+        .where({ 'users.account_type': 'investor' })
+        .orderBy('users.created_at', 'desc')
+        .select(
+          'users.id',
+          'users.email',
+          'users.account_status',
+          'investor_profiles.first_name',
+          'investor_profiles.last_name',
+          'investor_profiles.account_number',
+          'investor_profiles.kyc_status'
+        ),
+      db('newsletter_campaigns')
+        .leftJoin('users', 'newsletter_campaigns.sent_by', 'users.id')
+        .orderBy('newsletter_campaigns.created_at', 'desc')
+        .limit(50)
+        .select('newsletter_campaigns.*', 'users.email as sent_by_email'),
+    ]);
+
+    const activeInvestors = investors.filter((i: any) => i.account_status === 'active');
+    const kycApprovedCount = activeInvestors.filter((i: any) => i.kyc_status === 'approved').length;
+
+    res.json({
+      smtpStatus,
+      investors,
+      campaigns,
+      stats: {
+        totalActiveInvestors: activeInvestors.length,
+        kycApprovedInvestors: kycApprovedCount,
+        totalCampaignsSent: campaigns.length,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.put('/newsletter/smtp', requireAdmin('settings.manage'), async (req, res, next) => {
+  try {
+    const schema = z.object({
+      host: z.string().trim().min(1, 'SMTP host is required.').max(255),
+      port: z.coerce.number().int().min(1).max(65535),
+      secure: z.boolean(),
+      user: z.string().trim().min(1, 'SMTP username/email is required.').max(255),
+      pass: z.string().max(500).optional().default(''),
+      from: z.string().trim().min(3, 'From header is required.').max(255),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid SMTP configuration.' });
+      return;
+    }
+
+    const db = getDb();
+    const now = new Date();
+    const entries: { key: string; value: string; type: string; desc: string }[] = [
+      { key: 'smtp_host', value: parsed.data.host, type: 'string', desc: 'Outbound SMTP host' },
+      { key: 'smtp_port', value: String(parsed.data.port), type: 'number', desc: 'Outbound SMTP port' },
+      { key: 'smtp_secure', value: parsed.data.secure ? 'true' : 'false', type: 'boolean', desc: 'Use implicit TLS/SSL' },
+      { key: 'smtp_user', value: parsed.data.user, type: 'string', desc: 'Outbound SMTP username' },
+      { key: 'smtp_from', value: parsed.data.from, type: 'string', desc: 'Outbound SMTP sender header' },
+    ];
+
+    if (parsed.data.pass.trim().length > 0) {
+      entries.push({
+        key: 'smtp_pass',
+        value: parsed.data.pass.trim(),
+        type: 'secret',
+        desc: 'Outbound SMTP account password',
+      });
+    }
+
+    for (const item of entries) {
+      const existing = await db('system_settings').where({ setting_key: item.key }).first();
+      if (existing) {
+        await db('system_settings').where({ setting_key: item.key }).update({
+          setting_value: item.value,
+          updated_by: req.authUser!.id,
+          updated_at: now,
+        });
+      } else {
+        await db('system_settings').insert({
+          setting_key: item.key,
+          setting_value: item.value,
+          value_type: item.type,
+          group_name: 'smtp',
+          description: item.desc,
+          is_public: false,
+          updated_by: req.authUser!.id,
+          updated_at: now,
+        });
+      }
+    }
+
+    await writeAuditLog({
+      actorUserId: req.authUser!.id,
+      action: 'smtp.config_updated',
+      entityType: 'system_settings',
+      newData: {
+        host: parsed.data.host,
+        port: parsed.data.port,
+        secure: parsed.data.secure,
+        user: parsed.data.user,
+        from: parsed.data.from,
+        passwordUpdated: parsed.data.pass.trim().length > 0,
+      },
+      req,
+    });
+
+    const smtpStatus = await getSmtpPublicStatus();
+    res.json({ ok: true, smtpStatus });
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.post('/newsletter/test', requireAdmin('cms.manage'), async (req, res, next) => {
+  try {
+    const schema = z.object({
+      toEmail: z.string().trim().email('Provide a valid test recipient email address.').max(191).optional(),
+    });
+    const parsed = schema.safeParse(req.body || {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid test recipient email.' });
+      return;
+    }
+
+    const verify = await verifySmtpConnection();
+    if (!verify.ok) {
+      res.status(400).json({ error: verify.error || 'SMTP verification failed.' });
+      return;
+    }
+
+    const recipientEmail = parsed.data.toEmail || req.authUser!.email;
+    const sendResult = await sendInstitutionalEmail({
+      to: recipientEmail,
+      recipientName: 'Administrator',
+      subject: 'RICHMOND-INV — SMTP Email Delivery Test Successful',
+      categoryLabel: 'Mail Delivery Verification',
+      headline: 'Outbound Email Delivery Is Connected',
+      body: 'This verification email confirms that your RICHMOND-INV SMTP server is properly connected and ready to deliver registration confirmations, KYC notices, payment confirmations, withdrawal updates, and investor newsletters.',
+      details: [
+        { label: 'Test Recipient', value: recipientEmail },
+        { label: 'Verified At (UTC)', value: new Date().toISOString().replace('T', ' ').slice(0, 19) },
+      ],
+      ctaLabel: 'Open Administrator Console',
+      ctaUrl: process.env.APP_URL ? `${process.env.APP_URL.replace(/\/+$/, '')}/admin/newsletter` : undefined,
+    });
+
+    if (!sendResult.ok) {
+      res.status(400).json({ error: sendResult.error || 'Unable to send test email.' });
+      return;
+    }
+
+    res.json({ ok: true, recipientEmail, messageId: sendResult.messageId || null });
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.post('/newsletter/send', requireAdmin('cms.manage'), async (req, res, next) => {
+  try {
+    const schema = z.object({
+      subject: z.string().trim().min(3, 'Email subject must be at least 3 characters.').max(250),
+      headline: z.string().trim().max(250).optional().default(''),
+      body: z.string().trim().min(10, 'Newsletter body must be at least 10 characters.').max(20000),
+      audienceType: z.enum(['all_active', 'kyc_approved', 'selected_investors']),
+      recipientUserIds: z.array(z.coerce.number().int().positive()).optional().default([]),
+      ctaLabel: z.string().trim().max(120).optional().default(''),
+      ctaUrl: z.string().trim().max(500).optional().default(''),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid newsletter submission.' });
+      return;
+    }
+
+    if (parsed.data.ctaUrl && !/^https?:\/\//i.test(parsed.data.ctaUrl)) {
+      res.status(400).json({ error: 'Call-to-action URL must start with https:// or http://.' });
+      return;
+    }
+
+    const smtp = await getSmtpConfig();
+    if (!smtp) {
+      res.status(400).json({
+        error: 'SMTP mail delivery is not configured yet. Configure SMTP settings on this page or in your server .env file first.',
+      });
+      return;
+    }
+
+    const db = getDb();
+    let query = db('users')
+      .leftJoin('investor_profiles', 'users.id', 'investor_profiles.user_id')
+      .where({ 'users.account_type': 'investor' })
+      .select(
+        'users.id',
+        'users.email',
+        'users.account_status',
+        'investor_profiles.first_name',
+        'investor_profiles.last_name',
+        'investor_profiles.account_number',
+        'investor_profiles.kyc_status'
+      );
+
+    if (parsed.data.audienceType === 'all_active') {
+      query = query.where('users.account_status', 'active');
+    } else if (parsed.data.audienceType === 'kyc_approved') {
+      query = query.where('users.account_status', 'active').where('investor_profiles.kyc_status', 'approved');
+    } else {
+      if (parsed.data.recipientUserIds.length === 0) {
+        res.status(400).json({ error: 'Select at least one investor recipient.' });
+        return;
+      }
+      query = query.whereIn('users.id', parsed.data.recipientUserIds);
+    }
+
+    const recipients = await query;
+    if (recipients.length === 0) {
+      res.status(400).json({ error: 'No matching investor accounts found for the selected audience.' });
+      return;
+    }
+
+    const transporter = createSmtpTransporter(smtp);
+    let sentCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
+
+    for (const recipient of recipients) {
+      const fullName = [recipient.first_name, recipient.last_name].filter(Boolean).join(' ').trim();
+      const result = await sendInstitutionalEmail(
+        {
+          to: recipient.email,
+          recipientName: fullName || undefined,
+          subject: parsed.data.subject,
+          categoryLabel: 'Investor Newsletter',
+          headline: parsed.data.headline || parsed.data.subject,
+          body: parsed.data.body,
+          details: recipient.account_number
+            ? [{ label: 'Shareholder Account', value: String(recipient.account_number) }]
+            : undefined,
+          ctaLabel: parsed.data.ctaLabel || undefined,
+          ctaUrl: parsed.data.ctaUrl || undefined,
+        },
+        { transporter, from: smtp.from }
+      );
+
+      if (result.ok) {
+        sentCount += 1;
+      } else {
+        failedCount += 1;
+        if (errors.length < 5) {
+          errors.push(`${recipient.email}: ${result.error || 'Delivery failed'}`);
+        }
+      }
+    }
+
+    const campaignReference = generateReference('RINV-NEWS');
+    const status = failedCount === 0 ? 'sent' : sentCount > 0 ? 'partial' : 'failed';
+
+    await db('newsletter_campaigns').insert({
+      campaign_reference: campaignReference,
+      subject: parsed.data.subject,
+      headline: parsed.data.headline || null,
+      body: parsed.data.body,
+      cta_label: parsed.data.ctaLabel || null,
+      cta_url: parsed.data.ctaUrl || null,
+      audience_type: parsed.data.audienceType,
+      recipient_count: recipients.length,
+      sent_count: sentCount,
+      failed_count: failedCount,
+      status,
+      error_summary: errors.length > 0 ? errors.join(' | ') : null,
+      sent_by: req.authUser!.id,
+    });
+
+    await writeAuditLog({
+      actorUserId: req.authUser!.id,
+      action: 'newsletter.sent',
+      entityType: 'newsletter_campaign',
+      newData: {
+        campaignReference,
+        subject: parsed.data.subject,
+        audienceType: parsed.data.audienceType,
+        recipientCount: recipients.length,
+        sentCount,
+        failedCount,
+        status,
+      },
+      req,
+    });
+
+    res.status(201).json({
+      ok: true,
+      campaignReference,
+      recipientCount: recipients.length,
+      sentCount,
+      failedCount,
+      status,
+      errorSummary: errors.length > 0 ? errors.join(' | ') : null,
+    });
   } catch (err) {
     next(err);
   }

@@ -8,6 +8,7 @@ import {
   Clock,
   FileCheck2,
   Layers,
+  Mail,
   RefreshCw,
   Trash2,
   TrendingUp,
@@ -27,6 +28,7 @@ export const ADMIN_NAV = [
   { to: '/admin/offerings', label: 'Investment Plans', badgeKey: undefined },
   { to: '/admin/portfolios', label: 'Portfolios & Dividends', badgeKey: 'activePortfoliosCount' },
   { to: '/admin/kyc', label: 'KYC Verifications', badgeKey: 'pendingKycSubmissions' },
+  { to: '/admin/newsletter', label: 'Newsletter & Emails', badgeKey: undefined },
   { to: '/admin/cms', label: 'Content & CMS Setup', badgeKey: undefined },
   { to: '/admin/settings', label: 'System Settings', badgeKey: undefined },
   { to: '/admin/reports', label: 'Reports & Exports', badgeKey: undefined },
@@ -333,6 +335,14 @@ export function AdminDashboardPage() {
             >
               <FileCheck2 className="w-4 h-4 text-[#0B172A]" />
               <span>KYC Compliance</span>
+            </Link>
+
+            <Link
+              to="/admin/newsletter"
+              className="inline-flex items-center gap-2 border border-[#B5924C] bg-white text-[#0B172A] hover:bg-[#F9F7F2] px-5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors whitespace-nowrap"
+            >
+              <Mail className="w-4 h-4 text-[#997837]" />
+              <span>Newsletter &amp; Emails</span>
             </Link>
           </section>
 

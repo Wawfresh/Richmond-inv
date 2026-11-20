@@ -6,6 +6,7 @@ import { migration004InvestmentPlansDurationUnit } from './migrations/004_invest
 import { migration005CryptoPaymentProcessing } from './migrations/005_crypto_payment_processing.ts';
 import { migration006WithdrawalRequests } from './migrations/006_withdrawal_requests.ts';
 import { migration007UpdateHeadquartersAddress } from './migrations/007_update_headquarters_address.ts';
+import { migration008NewsletterCampaigns } from './migrations/008_newsletter_campaigns.ts';
 
 const MIGRATIONS: AppMigration[] = [
   migration001InitialSchema,
@@ -15,6 +16,7 @@ const MIGRATIONS: AppMigration[] = [
   migration005CryptoPaymentProcessing,
   migration006WithdrawalRequests,
   migration007UpdateHeadquartersAddress,
+  migration008NewsletterCampaigns,
 ];
 
 export async function runMigrations(): Promise<string[]> {

@@ -148,10 +148,21 @@ authRouter.post('/register', async (req, res, next) => {
     await createNotification({
       userId: createdUserId,
       category: 'account_registration',
-      title: 'Investor Account Created',
-      message: `Welcome to RICHMOND-INV. Your investor account number is ${accountNumber}. Please submit your KYC verification documents to unlock share subscriptions.`,
+      title: 'Welcome to RICHMOND-INV — Account Registration Confirmed',
+      message: `Your RICHMOND-INV investor account has been successfully created and activated.\n\nYour dedicated shareholder account number is ${accountNumber}. To unlock share subscriptions and full treasury features, sign in to your Investor Portal and complete your KYC identity verification.`,
       relatedEntityType: 'investor_profile',
       relatedEntityId: createdUserId,
+      sendEmail: true,
+      emailSubject: `Welcome to RICHMOND-INV — Registration Confirmed (${accountNumber})`,
+      emailHeadline: 'Your Investor Account Is Active',
+      emailDetails: [
+        { label: 'Account Number', value: accountNumber },
+        { label: 'Registered Email', value: email },
+        { label: 'Account Status', value: 'Active' },
+        { label: 'Next Step', value: 'Submit KYC Verification Documents' },
+      ],
+      emailCtaLabel: 'Open Investor Dashboard',
+      emailCtaPath: '/portal',
     });
 
     await notifyAllAdmins(
@@ -494,8 +505,16 @@ authRouter.post('/forgot-password', async (req, res, next) => {
         userId: user.id,
         category: 'security',
         title: 'Password Reset Requested',
-        message: 'A password reset request was initiated for your account. If you did not authorize this request, contact Compliance immediately.',
+        message: `A password reset request was initiated for your RICHMOND-INV account. Use the reset token below within 30 minutes to set a new password.\n\nIf you did not authorize this request, please ignore this message and contact Investor Relations immediately.`,
         sendEmail: true,
+        emailSubject: 'RICHMOND-INV — Password Reset Instructions',
+        emailHeadline: 'Password Reset Request',
+        emailDetails: [
+          { label: 'Reset Token', value: rawResetToken },
+          { label: 'Valid For', value: '30 Minutes' },
+        ],
+        emailCtaLabel: 'Reset Account Password',
+        emailCtaPath: `/reset-password?token=${encodeURIComponent(rawResetToken)}`,
       });
 
       await writeAuditLog({
