@@ -15,7 +15,11 @@ export function CorporateLayout({ children }: { children: React.ReactNode }) {
     rawRegNote === 'Registration & jurisdictional details configurable via Administrator Settings.'
       ? ''
       : rawRegNote;
-  const hqAddress = publicSettings.headquarters_address || '24 Bishopsgate, London EC2N 4BQ, United Kingdom';
+  const rawHqAddress = (publicSettings.headquarters_address || '').trim();
+  const hqAddress =
+    !rawHqAddress || rawHqAddress === '24 Bishopsgate, London EC2N 4BQ, United Kingdom'
+      ? 'Saint Johns, Auckland, 1072, New Zealand'
+      : rawHqAddress;
   const contactEmail = publicSettings.contact_email || 'investor.relations@richmond-inv.com';
   const contactPhone = publicSettings.contact_phone || '+44 20 7946 0180';
 

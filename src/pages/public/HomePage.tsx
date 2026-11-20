@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, ChevronDown, ChevronUp } from 'lucide-react';
 import { CorporateLayout } from '../../components/Layout';
+import { PortalUtilityDock } from '../../components/PortalUtilityDock';
 import { apiRequest } from '../../lib/api';
 import { formatCurrency, formatDate, formatPlanDuration, formatRoi } from '../../lib/format';
 import type { Announcement, FaqEntry, ShareOffering } from '../../types';
@@ -167,7 +168,7 @@ export function HomePage() {
               />
               <div className="absolute inset-0 bg-gradient-to-t from-[#060E1C]/80 via-[#060E1C]/20 to-transparent" />
               <div className="absolute bottom-5 left-5 right-5 flex flex-wrap items-center justify-between gap-2 text-xs text-[#E5E8EE]">
-                <span>London · Zurich · Institutional Governance</span>
+                <span>Auckland · Institutional Governance</span>
                 <span className="font-mono tabular-nums text-[#C9A968]">Direct Share Registry</span>
               </div>
             </div>
@@ -506,6 +507,7 @@ export function HomePage() {
           </div>
         </div>
       </section>
+      <PortalUtilityDock />
     </CorporateLayout>
   );
 }

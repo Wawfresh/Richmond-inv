@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { FileText, Lock, Pencil, X } from 'lucide-react';
 import { PortalShell } from '../../components/PortalShell';
+import { PortalUtilityDock } from '../../components/PortalUtilityDock';
 import { StatusBadge } from '../../components/StatusBadge';
 import { useAuth } from '../../context/AuthContext';
 import { apiDownload, apiRequest } from '../../lib/api';
@@ -127,7 +128,7 @@ export function InvestorDashboardPage() {
       ) : error ? (
         <div className="bg-white border border-[#991B1B]/30 p-6 text-sm text-[#991B1B]">{error}</div>
       ) : (
-        <div className="space-y-8">
+        <div className="space-y-8 pb-14">
           {/* Welcome & Account Overview */}
           <section className="bg-white border border-[#E5E8EE] p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div className="space-y-1.5">
@@ -626,6 +627,7 @@ export function InvestorDashboardPage() {
           </div>
         </div>
       )}
+      <PortalUtilityDock />
     </PortalShell>
   );
 }

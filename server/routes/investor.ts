@@ -1169,7 +1169,7 @@ investorRouter.get('/portfolio/statement-pdf', async (req, res, next) => {
       companyName: settings.company_name || 'RICHMOND-INV',
       legalName: settings.company_legal_name || 'Richmond Investment Holdings Ltd.',
       contactEmail: settings.contact_email || 'investor.relations@richmond-inv.com',
-      hqAddress: settings.headquarters_address || '24 Bishopsgate, London EC2N 4BQ, United Kingdom',
+      hqAddress: settings.headquarters_address || 'Saint Johns, Auckland, 1072, New Zealand',
       statementReference,
       generatedAt,
       investor: {

@@ -261,7 +261,10 @@ export function ContactPage() {
               <div>
                 <dt className="text-xs uppercase tracking-wider text-[#4A5260]">Headquarters</dt>
                 <dd className="text-[#1C2026] mt-0.5">
-                  {publicSettings.headquarters_address || '24 Bishopsgate, London EC2N 4BQ, United Kingdom'}
+                  {!publicSettings.headquarters_address ||
+                  publicSettings.headquarters_address === '24 Bishopsgate, London EC2N 4BQ, United Kingdom'
+                    ? 'Saint Johns, Auckland, 1072, New Zealand'
+                    : publicSettings.headquarters_address}
                 </dd>
               </div>
               <div>
